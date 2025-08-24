@@ -1,0 +1,29 @@
+{
+  "name": "banking-account-service",
+  "version": "1.0.0",
+  "description": "Secure banking account microservice",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "dev": "nodemon app.js",
+    "test": "jest",
+    "test:security": "npm audit && semgrep --config=p/security-audit .",
+    "docker:build": "docker build -t banking-account-service .",
+    "docker:scan": "trivy image banking-account-service"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "helmet": "^7.0.0",
+    "express-rate-limit": "^6.7.0",
+    "jsonwebtoken": "^9.0.0",
+    "bcryptjs": "^2.4.3",
+    "pg": "^8.11.0",
+    "winston": "^3.9.0"
+  },
+  "devDependencies": {
+    "jest": "^29.5.0",
+    "nodemon": "^2.0.22",
+    "eslint": "^8.42.0",
+    "eslint-plugin-security": "^1.7.1"
+  }
+}

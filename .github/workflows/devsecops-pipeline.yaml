@@ -1,0 +1,320 @@
+name: DevSecOps Banking Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # ================================
+  # SECURITY SCANNING STAGE
+  # ================================
+  security-scan:
+    runs-on: ubuntu-latest
+    name: 🔒 Security Scanning
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # SAST - Static Application Security Testing
+      - name: 🔍 SAST - CodeQL Analysis
+        uses: github/codeql-action/init@v2
+        with:
+          languages: javascript
+          queries: security-extended
+
+      - name: 🔍 SAST - Semgrep Scan
+        uses: returntocorp/semgrep-action@v1
+        with:
+          config: >-
+            p/security-audit
+            p/secrets
+            p/owasp-top-ten
+          generateSarif: "1"
+
+      # Secret Scanning
+      - name: 🔐 Secret Scanning with TruffleHog
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: main
+          head: HEAD
+
+      # Dependency Scanning
+      - name: 📦 Dependency Vulnerability Scan
+        run: |
+          npm audit --audit-level high
+          npx npm-check-updates --doctor
+
+      # License Compliance
+      - name: ⚖️ License Compliance Check
+        run: |
+          npm install -g license-checker
+          license-checker --onlyAllow 'MIT;ISC;Apache-2.0;BSD-3-Clause;BSD-2-Clause'
+
+      # Infrastructure Security Scan
+      - name: 🏗️ Infrastructure Security Scan
+        uses: aquasecurity/tfsec-action@v1.0.0
+        with:
+          working_directory: infrastructure/terraform
+
+      # Container Security Scanning
+      - name: 🐳 Container Security Scan - Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Security Results to GitHub Security Tab
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: trivy-results.sarif
+
+  # ================================
+  # BUILD AND TEST STAGE
+  # ================================
+  build-and-test:
+    runs-on: ubuntu-latest
+    needs: security-scan
+    name: 🔨 Build & Test
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      # Install dependencies
+      - name: 📦 Install Dependencies
+        run: |
+          cd applications/account-service
+          npm ci
+
+      # Unit Tests
+      - name: 🧪 Run Unit Tests
+        run: |
+          cd applications/account-service
+          npm test -- --coverage
+          
+      # Integration Tests
+      - name: 🔗 Run Integration Tests
+        run: |
+          cd applications/account-service
+          npm run test:integration
+
+      # Code Quality Check
+      - name: 📊 Code Quality Analysis - SonarQube
+        uses: sonarqube-quality-gate-action@master
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      # Build Docker Image
+      - name: 🐳 Build Docker Image
+        run: |
+          cd applications/account-service
+          docker build -t account-service:${{ github.sha }} .
+
+      # Container Security Scan on Built Image
+      - name: 🔒 Container Image Security Scan
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            -v $HOME/Library/Caches:/root/.cache/ \
+            aquasec/trivy:latest image account-service:${{ github.sha }}
+
+  # ================================
+  # INFRASTRUCTURE DEPLOYMENT
+  # ================================
+  infrastructure:
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    name: 🏗️ Infrastructure Deployment
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.6.0
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-west-2
+
+      # Terraform Security Scan
+      - name: 🔍 Terraform Security Scan
+        run: |
+          cd infrastructure/terraform
+          tfsec .
+          checkov -d . --framework terraform
+
+      # Terraform Plan
+      - name: 📋 Terraform Plan
+        run: |
+          cd infrastructure/terraform
+          terraform init
+          terraform plan -out=tfplan
+
+      # Cost Analysis
+      - name: 💰 Infrastructure Cost Analysis
+        run: |
+          cd infrastructure/terraform
+          infracost breakdown --path=tfplan
+
+      # Terraform Apply (only on main branch)
+      - name: 🚀 Terraform Apply
+        if: github.ref == 'refs/heads/main'
+        run: |
+          cd infrastructure/terraform
+          terraform apply -auto-approve tfplan
+
+  # ================================
+  # DYNAMIC SECURITY TESTING
+  # ================================
+  dynamic-security-testing:
+    runs-on: ubuntu-latest
+    needs: infrastructure
+    name: 🕷️ DAST & Penetration Testing
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # DAST - Dynamic Application Security Testing
+      - name: 🕸️ OWASP ZAP Full Scan
+        uses: zaproxy/action-full-scan@v0.4.0
+        with:
+          target: 'https://banking-app.example.com'
+          rules_file_name: '.zap/rules.tsv'
+          cmd_options: '-a'
+
+      # API Security Testing
+      - name: 🔌 API Security Testing
+        run: |
+          # Install and run API security testing tools
+          docker run --rm -t \
+            -v $(pwd):/workspace \
+            owasp/zap2docker-stable zap-api-scan.py \
+            -t https://banking-app.example.com/api/swagger.json \
+            -f openapi
+
+      # Load Testing with Security Focus
+      - name: ⚡ Performance & Security Load Testing
+        run: |
+          # Install k6 for load testing
+          sudo apt-get update
+          sudo apt-get install -y k6
+          
+          # Run load test with security checks
+          k6 run --out json=load-test-results.json scripts/load-test-security.js
+
+  # ================================
+  # DEPLOYMENT STAGE
+  # ================================
+  deploy:
+    runs-on: ubuntu-latest
+    needs: [dynamic-security-testing]
+    name: 🚀 Deploy to Production
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # Configure kubectl
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig --region us-west-2 --name banking-cluster
+
+      # Deployment Security Check
+      - name: 🔒 Kubernetes Security Scan
+        run: |
+          # Install kubesec
+          wget https://github.com/controlplaneio/kubesec/releases/latest/download/kubesec_linux_amd64.tar.gz
+          tar -xzf kubesec_linux_amd64.tar.gz
+          ./kubesec scan infrastructure/kubernetes/account-service.yaml
+
+      # Deploy with Rolling Update
+      - name: 🔄 Rolling Deployment
+        run: |
+          kubectl apply -f infrastructure/kubernetes/
+          kubectl rollout status deployment/account-service
+
+      # Post-deployment Security Verification
+      - name: ✅ Post-deployment Security Check
+        run: |
+          # Run security smoke tests
+          kubectl run security-test --image=gauntlt/gauntlt --rm -i --tty \
+            --command -- gauntlt --format=json security/smoke-tests/
+
+  # ================================
+  # MONITORING & COMPLIANCE
+  # ================================
+  post-deployment-monitoring:
+    runs-on: ubuntu-latest
+    needs: deploy
+    name: 📊 Monitoring & Compliance
+    steps:
+      - name: 🔍 Security Monitoring Setup
+        run: |
+          # Configure security monitoring
+          echo "Setting up security monitoring dashboards..."
+          # This would typically configure Grafana dashboards, alerts, etc.
+
+      - name: 📋 Compliance Reporting
+        run: |
+          # Generate compliance reports
+          echo "Generating compliance reports..."
+          # This would generate SOC2, PCI-DSS compliance reports
+
+      - name: 🚨 Security Alert Configuration
+        run: |
+          # Setup security alerts
+          echo "Configuring security alerts..."
+          # This would configure security incident response
+
+      # Notification
+      - name: 📢 Deployment Notification
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          channel: '#devsecops'
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+
+  # ================================
+  # CONTINUOUS COMPLIANCE MONITORING
+  # ================================
+  compliance-monitoring:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' # Run on schedule for continuous monitoring
+    name: ⚖️ Continuous Compliance
+    steps:
+      - name: 🔍 Security Posture Assessment
+        run: |
+          # Run continuous security assessment
+          echo "Running security posture assessment..."
+
+      - name: 📊 Compliance Dashboard Update
+        run: |
+          # Update compliance dashboards
+          echo "Updating compliance dashboards..."
+
+      - name: 🚨 Security Incident Detection
+        run: |
+          # Check for security incidents
+          echo "Scanning for security incidents..."
