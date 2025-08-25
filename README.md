@@ -454,4 +454,25 @@ I'm passionate about DevSecOps, security automation, and building secure, resili
 
 ---
 
+
+## 🧪 **Testing All Services**
+
+### Run Individual Services
+```bash
+# Account Service
+cd applications/account-service && npm install && npm start
+# Visit: http://localhost:3001/health
+
+# Transaction Service  
+cd applications/transaction-service && npm install && npm start
+# Visit: http://localhost:3002/health
+
+# Notification Service
+cd applications/notification-service && npm install && npm start  
+# Visit: http://localhost:3003/health
+
+# Web Frontend
+cd applications/web-frontend && npm install && npm start
+# Visit: http://localhost:3000
+
 *This is a comprehensive portfolio project showcasing advanced DevSecOps engineering capabilities and security automation expertise.*
